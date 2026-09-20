@@ -1,0 +1,244 @@
+name: Build and publish private source release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit SHA in the private source repository
+        required: true
+        type: string
+      release_tag:
+        description: Public release tag, for example v0.1.0-mvp.1
+        required: true
+        type: string
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: public-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPOSITORY: Smugpigeon/chuangzhixinghui_v2
+  NODE_VERSION: 22.19.0
+  PNPM_VERSION: 10.26.2
+  UV_VERSION: 0.10.11
+  PYTHON_VERSION: '3.13'
+
+jobs:
+  inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Validate immutable release inputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+
+  contracts:
+    needs: inputs
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact private source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_DEPLOY_KEY }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify checked-out revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install Linux namespace sandbox
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Load distribution Bubblewrap restriction profile
+        if: runner.os == 'Linux'
+        run: bash scripts/ci-install-bwrap-profile.sh
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:upstream
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+      - name: Verify Linux isolation before application tests
+        if: runner.os == 'Linux'
+        run: pnpm exec tsx --test packages/import-sandbox/test/linux.test.ts
+      - run: uv run playwright install --with-deps chromium
+      - name: Verify sandboxed PDF worker
+        if: runner.os == 'Linux'
+        run: uv run python scripts/ci-browser-sandbox.py
+      - run: pnpm provenance:check
+      - run: pnpm schemas:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm test:python
+      - run: pnpm test:benchmark
+      - run: pnpm build:learning
+      - name: Bind candidate source and build bytes
+        run: |
+          release_dir="$(mktemp -d)"
+          trap 'rm -f "$release_dir/manifest.json"; rmdir "$release_dir"' EXIT
+          pnpm release:manifest create "$release_dir/manifest.json"
+          pnpm release:manifest verify "$release_dir/manifest.json"
+      - run: uv run python scripts/test-standalone.py
+      - run: uv run python scripts/test-pptx-import.py
+      - run: uv run python scripts/test-renderer.py
+      - name: Learning browser flows
+        run: |
+          pnpm dev:learning > /tmp/czxh-learning-server.log 2>&1 &
+          learning_server_pid=$!
+          trap 'kill "$learning_server_pid" 2>/dev/null || true' EXIT
+          uv run python scripts/test-learning.py
+          uv run python scripts/test-molecule-renderer.py
+          uv run python scripts/test-molecule-export.py
+          uv run python scripts/test-self-check.py
+          uv run python scripts/test-private-learning.py
+          uv run python scripts/test-algebra-grading.py
+          uv run python scripts/test-grade-review.py
+          uv run python scripts/test-course-access.py
+          uv run python scripts/test-feedback.py
+          uv run python scripts/test-course-questions.py
+          uv run python scripts/test-course-completion.py
+          uv run python scripts/test-math-text.py
+          uv run python scripts/test-upload-cancel.py
+          uv run python scripts/test-pdf-import.py
+          uv run python scripts/test-narration.py
+          uv run python scripts/test-scene-editing.py
+          uv run python scripts/test-slide-elements.py
+          uv run python scripts/test-choice-authoring.py
+          uv run python scripts/test-outline-review.py
+          uv run python scripts/test-student-preview.py
+          uv run python scripts/test-speech-segments.py
+          uv run python scripts/test-narration-transcript.py
+          uv run python scripts/test-geometry.py
+          uv run python scripts/test-geometry-export.py
+          uv run python scripts/test-parameter-recovery.py
+          uv run python scripts/test-function-comparison.py
+          uv run python scripts/test-motion.py
+          uv run python scripts/test-motion-course.py
+          uv run python scripts/test-physics-check.py
+          uv run python scripts/test-physics-authoring.py
+          uv run python scripts/test-assembly-recovery.py
+          uv run python scripts/test-quantity-grading.py
+
+  portable-contracts:
+    needs: inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact private source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_DEPLOY_KEY }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --frozen
+      - run: pnpm schemas:check
+      - run: pnpm test:python
+      - run: pnpm test:benchmark
+      - name: Unsupported host must fail closed
+        run: pnpm exec tsx --test packages/import-sandbox/test/sandbox.test.ts
+
+  release:
+    needs: [contracts, portable-contracts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact private source revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ inputs.source_sha }}
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_DEPLOY_KEY }}
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify checked-out revision
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:upstream
+      - run: pnpm build:learning
+      - name: Package source-free build outputs
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          artifact="chuangzhixinghui-v2-build-${RELEASE_TAG}-${SOURCE_SHA:0:12}-linux-x64.tar.gz"
+          staging="$(mktemp -d)"
+          mkdir -p "$staging/apps/learning" "$staging/packages/pptx-import" "$staging/vendor/openmaic/packages/@openmaic"
+          cp -R apps/learning/dist "$staging/apps/learning/dist"
+          cp -R packages/pptx-import/dist "$staging/packages/pptx-import/dist"
+          for package in dsl generation renderer; do
+            mkdir -p "$staging/vendor/openmaic/packages/@openmaic/$package"
+            cp -R "vendor/openmaic/packages/@openmaic/$package/dist" "$staging/vendor/openmaic/packages/@openmaic/$package/dist"
+          done
+          cp THIRD_PARTY_NOTICES.md "$staging/THIRD_PARTY_NOTICES.md"
+          jq -n --arg sourceRepository "$SOURCE_REPOSITORY" --arg sourceRevision "$SOURCE_SHA" --arg releaseTag "$RELEASE_TAG" --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{format:"czxh-public-build-1",sourceRepository:$sourceRepository,sourceRevision:$sourceRevision,releaseTag:$releaseTag,workflowRun:$workflowRun,productionReleaseAllowed:false}' > "$staging/BUILD.json"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -C "$staging" -czf "$artifact" .
+          sha256sum "$artifact" > "$artifact.sha256"
+          printf '%s\n' "$artifact" > /tmp/czxh-artifact-name
+      - name: Publish GitHub Release candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          artifact="$(cat /tmp/czxh-artifact-name)"
+          cat > /tmp/czxh-release-notes.md <<EOF
+          Built from private source revision \`$SOURCE_SHA\` after the public validation workflow passed.
+
+          This release contains compiled build outputs only. It is not a production deployment approval.
+          EOF
+          prerelease_flag=()
+          if [[ "$PRERELEASE" == 'true' ]]; then prerelease_flag+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "$artifact" "$artifact.sha256" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Chuangzhi Xinghui V2 $RELEASE_TAG" --notes-file /tmp/czxh-release-notes.md "${prerelease_flag[@]}"
