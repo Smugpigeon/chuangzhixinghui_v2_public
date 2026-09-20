@@ -97,7 +97,13 @@ jobs:
       - run: pnpm provenance:check
       - run: pnpm schemas:check
       - run: pnpm typecheck
-      - run: pnpm test
+      - name: Run Node tests on macOS
+        if: runner.os == 'macOS'
+        run: pnpm test
+      - name: Run Node tests serially with Linux isolation
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        run: pnpm build:import-worker && pnpm exec tsx --test --test-concurrency=1 packages/*/test/*.test.ts apps/*/test/*.test.ts
       - run: pnpm test:python
       - run: pnpm test:benchmark
       - run: pnpm build:learning
