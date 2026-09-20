@@ -235,15 +235,11 @@ jobs:
           sudo chown -R root:root "$staging"
           "$staging/runtime/node" --input-type=module -e 'const root=process.argv[1];const {pathToFileURL}=await import("node:url");const module=await import(pathToFileURL(root+"/apps/learning/server/release-preflight.mjs").href);const result=module.inspectServiceRelease(root);if(result.kind!=="service-bundle")process.exit(1)' "$staging"
           package_db="$bundle_parent/package-smoke.sqlite"
-          CZXH_LOCAL_PORT=5189 CZXH_PROTOTYPE_DB="$package_db" "$current/runtime/node" "$current/apps/learning/server/standalone.mjs" > "$bundle_parent/service.log" 2>&1 &
+          CZXH_LOCAL_PORT=5173 CZXH_PROTOTYPE_DB="$package_db" "$current/runtime/node" "$current/apps/learning/server/standalone.mjs" > "$bundle_parent/service.log" 2>&1 &
           service_pid=$!
           trap 'kill "$service_pid" 2>/dev/null || true' EXIT
-          for attempt in {1..40}; do
-            if curl --fail --silent --output /dev/null http://127.0.0.1:5189/_health/ready; then break; fi
-            if ! kill -0 "$service_pid" 2>/dev/null; then cat "$bundle_parent/service.log"; exit 1; fi
-            sleep 0.25
-          done
-          curl --fail --silent --output /dev/null http://127.0.0.1:5189/_health/ready
+          if ! "$current/runtime/node" "$current/bin/wait-ready.mjs"; then cat "$bundle_parent/service.log"; exit 1; fi
+          curl --fail --silent --output /dev/null http://127.0.0.1:5173/_health/ready
           kill -INT "$service_pid"
           wait "$service_pid"
           trap - EXIT
