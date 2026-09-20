@@ -246,6 +246,15 @@ jobs:
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -C "$staging" -czf "$artifact" .
           sha256sum "$artifact" > "$artifact.sha256"
           printf '%s\n' "$artifact" > /tmp/czxh-artifact-name
+      - name: Retain verified package before release publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: service-${{ inputs.release_tag }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
       - name: Publish GitHub Release candidate
         env:
           GH_TOKEN: ${{ github.token }}
