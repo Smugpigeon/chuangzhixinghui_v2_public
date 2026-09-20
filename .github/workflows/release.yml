@@ -212,25 +212,37 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:upstream
       - run: pnpm build:learning
-      - name: Package source-free build outputs
+      - name: Build and verify source-free service package
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          artifact="chuangzhixinghui-v2-build-${RELEASE_TAG}-${SOURCE_SHA:0:12}-linux-x64.tar.gz"
-          staging="$(mktemp -d)"
-          mkdir -p "$staging/apps/learning" "$staging/packages/pptx-import" "$staging/vendor/openmaic/packages/@openmaic"
-          cp -R apps/learning/dist "$staging/apps/learning/dist"
-          cp -R packages/pptx-import/dist "$staging/packages/pptx-import/dist"
-          for package in dsl generation renderer; do
-            mkdir -p "$staging/vendor/openmaic/packages/@openmaic/$package"
-            cp -R "vendor/openmaic/packages/@openmaic/$package/dist" "$staging/vendor/openmaic/packages/@openmaic/$package/dist"
+          artifact="chuangzhixinghui-v2-service-${RELEASE_TAG}-${SOURCE_SHA:0:12}-linux-x64.tar.gz"
+          bundle_parent="$(mktemp -d)"
+          staging="$bundle_parent/service"
+          pnpm release:service "$staging"
+          "$staging/runtime/node" "$staging/bin/release-control.mjs" verify "$staging"
+          "$staging/runtime/python/bin/python3" -I -B -c "import sys;sys.path.insert(0,sys.argv[1]);import PIL,jsonschema,pypdf,pypdfium2,rfc8785" "$staging/runtime/python-site"
+          package_db="$bundle_parent/package-smoke.sqlite"
+          CZXH_LOCAL_PORT=5189 CZXH_PROTOTYPE_DB="$package_db" "$staging/runtime/node" "$staging/apps/learning/server/standalone.mjs" > "$bundle_parent/service.log" 2>&1 &
+          service_pid=$!
+          trap 'kill "$service_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..40}; do
+            if curl --fail --silent --output /dev/null http://127.0.0.1:5189/_health/ready; then break; fi
+            if ! kill -0 "$service_pid" 2>/dev/null; then cat "$bundle_parent/service.log"; exit 1; fi
+            sleep 0.25
           done
-          cp THIRD_PARTY_NOTICES.md "$staging/THIRD_PARTY_NOTICES.md"
-          jq -n --arg sourceRepository "$SOURCE_REPOSITORY" --arg sourceRevision "$SOURCE_SHA" --arg releaseTag "$RELEASE_TAG" --arg workflowRun "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" '{format:"czxh-public-build-1",sourceRepository:$sourceRepository,sourceRevision:$sourceRevision,releaseTag:$releaseTag,workflowRun:$workflowRun,productionReleaseAllowed:false}' > "$staging/BUILD.json"
+          curl --fail --silent --output /dev/null http://127.0.0.1:5189/_health/ready
+          kill -INT "$service_pid"
+          wait "$service_pid"
+          trap - EXIT
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner -C "$staging" -czf "$artifact" .
           sha256sum "$artifact" > "$artifact.sha256"
           printf '%s\n' "$artifact" > /tmp/czxh-artifact-name
@@ -245,7 +257,7 @@ jobs:
           cat > /tmp/czxh-release-notes.md <<EOF
           Built from private source revision \`$SOURCE_SHA\` after the public validation workflow passed.
 
-          This release contains compiled build outputs only. It is not a production deployment approval.
+          This release contains a source-free, integrity-bound Linux x64 service package with fixed runtimes and systemd policy. It is not a production deployment approval.
           EOF
           prerelease_flag=()
           if [[ "$PRERELEASE" == 'true' ]]; then prerelease_flag+=(--prerelease); fi
