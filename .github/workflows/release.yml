@@ -228,12 +228,14 @@ jobs:
           bundle_parent="$(mktemp -d)"
           staging="$bundle_parent/service"
           pnpm release:service "$staging"
-          "$staging/runtime/node" "$staging/bin/release-control.mjs" verify "$staging"
+          current="$bundle_parent/current"
+          ln -s "$staging" "$current"
+          "$current/runtime/node" "$current/bin/release-control.mjs" verify "$current"
           "$staging/runtime/python/bin/python3" -I -B -c "import sys;sys.path.insert(0,sys.argv[1]);import PIL,jsonschema,pypdf,pypdfium2,rfc8785" "$staging/runtime/python-site"
           sudo chown -R root:root "$staging"
           "$staging/runtime/node" --input-type=module -e 'const root=process.argv[1];const {pathToFileURL}=await import("node:url");const module=await import(pathToFileURL(root+"/apps/learning/server/release-preflight.mjs").href);const result=module.inspectServiceRelease(root);if(result.kind!=="service-bundle")process.exit(1)' "$staging"
           package_db="$bundle_parent/package-smoke.sqlite"
-          CZXH_LOCAL_PORT=5189 CZXH_PROTOTYPE_DB="$package_db" "$staging/runtime/node" "$staging/apps/learning/server/standalone.mjs" > "$bundle_parent/service.log" 2>&1 &
+          CZXH_LOCAL_PORT=5189 CZXH_PROTOTYPE_DB="$package_db" "$current/runtime/node" "$current/apps/learning/server/standalone.mjs" > "$bundle_parent/service.log" 2>&1 &
           service_pid=$!
           trap 'kill "$service_pid" 2>/dev/null || true' EXIT
           for attempt in {1..40}; do
