@@ -26,6 +26,8 @@ permissions:
 
 env:
   SOURCE_REPOSITORY: Smugpigeon/chuangzhixinghui_v2
+  # Force the uv-managed bin/lib layout required by the macOS sandbox allowlist.
+  UV_MANAGED_PYTHON: 'true'
   NODE_VERSION: 22.19.0
   PNPM_VERSION: 10.26.2
   UV_VERSION: 0.10.11
